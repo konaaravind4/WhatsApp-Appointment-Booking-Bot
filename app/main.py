@@ -1,105 +1,98 @@
 """
-Flask webhook gateway for WhatsApp Business API (Twilio).
+app/main.py — Flask webhook handler for WhatsApp Business API (Twilio gateway).
+
+Handles:
+  - GET  /webhook  → Twilio verification challenge
+  - POST /webhook  → Incoming WhatsApp messages from users
 """
-from __future__ import annotations
 
-import hashlib
-import hmac
-import logging
 import os
+import logging
+from flask import Flask, request, jsonify, Response
+from dotenv import load_dotenv
 
-from flask import Flask, Response, abort, jsonify, request
+from app.agents.coordinator import CoordinatorAgent
+from app.redis_cache import SessionStore
+from app.models import IncomingMessage
 
-from orchestrator import BookingOrchestrator
+load_dotenv()
 
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
+# ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-orchestrator = BookingOrchestrator()
-
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "whatsapp-bot-secret")
-
-
-# ── Health check ──────────────────────────────────────────────────────────
-
-
-@app.get("/health")
-def health() -> Response:
-    return jsonify({"status": "ok", "service": "whatsapp-appointment-bot"})
+session_store = SessionStore(redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"))
+coordinator = CoordinatorAgent(
+    gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+    waba_token=os.getenv("WABA_TOKEN", ""),
+    phone_number_id=os.getenv("PHONE_NUMBER_ID", ""),
+    verify_token=os.getenv("WHATSAPP_VERIFY_TOKEN", ""),
+    session_store=session_store,
+)
 
 
-# ── WhatsApp Cloud API webhook verification ───────────────────────────────
-
-
-@app.get("/webhook")
-def verify_webhook() -> Response:
+# ─── Webhook Verification ─────────────────────────────────────────────────────
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    """WhatsApp Business API webhook verification (hub challenge)."""
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        logger.info("Webhook verified successfully.")
+    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
+        logger.info("✅ Webhook verified")
         return Response(challenge, status=200, mimetype="text/plain")
-    abort(403)
+
+    logger.warning("❌ Webhook verification failed")
+    return jsonify({"error": "Forbidden"}), 403
 
 
-# ── Inbound messages ──────────────────────────────────────────────────────
-
-
-@app.post("/webhook")
-def handle_webhook() -> Response:
-    data = request.get_json(force=True, silent=True) or {}
+# ─── Incoming Messages ────────────────────────────────────────────────────────
+@app.route("/webhook", methods=["POST"])
+def receive_message():
+    """Handle incoming WhatsApp messages."""
+    payload = request.get_json(silent=True)
+    if not payload:
+        return jsonify({"error": "Empty payload"}), 400
 
     try:
-        entry = data["entry"][0]["changes"][0]["value"]
-        messages = entry.get("messages", [])
+        entry = payload.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+
         if not messages:
-            return jsonify({"status": "no_message"}), 200
+            # Acknowledgement / status update, not a message
+            return jsonify({"status": "ok"}), 200
 
-        msg = messages[0]
-        phone = msg["from"]
-        text = msg.get("text", {}).get("body", "")
+        msg_data = messages[0]
+        from_number = msg_data.get("from")
+        text = msg_data.get("text", {}).get("body", "").strip()
 
-        if not text:
-            return jsonify({"status": "non_text_message"}), 200
+        if not from_number or not text:
+            return jsonify({"status": "ignored"}), 200
 
-        logger.info("Inbound from %s: %s", phone, text[:60])
-        reply = orchestrator.process_message(phone, text)
+        incoming = IncomingMessage(from_number=from_number, text=text)
+        logger.info(f"📨 From {from_number}: {text}")
 
-        # In production, send reply via WhatsApp API here
-        logger.info("Reply to %s: %s", phone, reply[:80])
-        return jsonify({"status": "ok", "reply": reply}), 200
+        # Delegate to coordinator agent (async processing)
+        coordinator.handle(incoming)
+        return jsonify({"status": "processing"}), 200
 
-    except (KeyError, IndexError, TypeError) as e:
-        logger.warning("Malformed webhook payload: %s", e)
-        return jsonify({"status": "ignored"}), 200
-
-
-# ── Twilio fallback endpoint ──────────────────────────────────────────────
+    except Exception as exc:
+        logger.exception(f"Error handling message: {exc}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
-@app.post("/twilio/reply")
-def twilio_reply() -> Response:
-    """Twilio-compatible webhook endpoint (returns TwiML)."""
-    phone = request.form.get("From", "").replace("whatsapp:", "")
-    body = request.form.get("Body", "")
-
-    if not phone or not body:
-        return Response("<Response/>", mimetype="text/xml")
-
-    logger.info("Twilio inbound from %s: %s", phone, body[:60])
-    reply_text = orchestrator.process_message(phone, body)
-
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{reply_text}</Message>
-</Response>"""
-    return Response(twiml, mimetype="text/xml")
+# ─── Health ───────────────────────────────────────────────────────────────────
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "whatsapp-appointment-bot"})
 
 
 if __name__ == "__main__":
