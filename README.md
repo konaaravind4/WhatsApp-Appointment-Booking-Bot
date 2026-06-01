@@ -1,145 +1,153 @@
-# WhatsApp Appointment Booking Bot 🤖
+# WhatsApp Appointment Booking Bot 📅
 
-[![CI](https://github.com/konaaravind4/WhatsApp-Appointment-Booking-Bot/actions/workflows/ci.yml/badge.svg)](https://github.com/konaaravind4/WhatsApp-Appointment-Booking-Bot/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.11-blue)
-![Redis](https://img.shields.io/badge/redis-7-red)
-![Gemini](https://img.shields.io/badge/google-gemini-orange)
+> **Intelligent WhatsApp bot for automated appointment scheduling — with RAG-powered smart suggestions, KonaDB appointment storage, and conflict detection.**
 
-An intelligent WhatsApp bot MVP that **fully automates appointment booking** for salons. Built with:
-- **Flask** webhook gateway (WhatsApp Cloud API + Twilio)
-- **Google Gemini 2.0 Flash** for natural language intent extraction
-- **Redis Streams** for real-time event processing (Flink-style)
-- **Multi-agent A2A architecture** — Intent → Availability → Confirmation agents
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
+[![WhatsApp](https://img.shields.io/badge/WhatsApp-Business_API-brightgreen)](https://developers.facebook.com/docs/whatsapp)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/konaaravind4/WhatsApp-Appointment-Booking-Bot?style=social)](https://github.com/konaaravind4/WhatsApp-Appointment-Booking-Bot)
+
+An intelligent WhatsApp bot that handles end-to-end appointment booking through natural conversation — understanding intent, checking availability, avoiding conflicts, and confirming bookings automatically.
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| **Natural Language Booking** | Understands "book a slot tomorrow at 3pm" or "schedule for next Monday morning" |
+| **Conflict Detection** | Automatically checks for double-bookings |
+| **Multi-Service Support** | Configure multiple service types with different durations |
+| **Reminder Notifications** | Sends WhatsApp reminders 24h and 1h before appointment |
+| **Cancellation & Rescheduling** | Handles changes via conversation |
+| **🆕 KonaDB Storage** | All appointments stored in KonaDB (replaces SQLite) |
+| **🆕 RAG Smart Suggestions** | Suggests available slots based on past preferences |
+| **🆕 Ecosystem API** | Expose appointments via REST for cross-project queries |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-WhatsApp Message
-      │
-      ▼
-Flask Gateway (/webhook)
-      │
-      ▼
-BookingOrchestrator
-      ├─► IntentAgent     ── Gemini 2.0 Flash → extracts service/date/time/name
-      ├─► AvailabilityAgent ── Redis atomic slot reservation (SET NX)
-      └─► ConfirmationAgent  ── Booking storage + reminder scheduling
-                │
-                ▼
-       Redis Streams (booking-events)
-                │
-                ▼
-       BookingStreamProcessor (Flink-style consumer)
-                │
-                ▼
-       Analytics: redis HSET counters per service
+WhatsApp User Message
+        │
+        ▼
+Webhook Receiver (FastAPI)
+        │
+        ▼
+Intent Classifier
+  ├── BOOK_APPOINTMENT
+  ├── CANCEL_APPOINTMENT
+  ├── RESCHEDULE
+  ├── CHECK_AVAILABILITY
+  └── UNKNOWN
+        │
+        ▼
+Appointment Manager
+  ├── Slot Finder (checks KonaDB for conflicts)
+  ├── RAG Suggestion (similar past bookings)
+  └── Confirmation Flow
+        │
+        ▼
+WhatsApp Reply + KonaDB Save + Reminder Scheduler
 ```
-
-## 📊 Metrics
-
-| Metric | Value |
-|--------|-------|
-| Booking Accuracy | 97.3% |
-| Response Time | < 2s |
-| Concurrent Users | 500+ |
-| Manual Work Reduced | 85% |
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Python 3.11+
-- Docker & Docker Compose
-- Google Gemini API key
-- Twilio account (optional) or WhatsApp Cloud API credentials
-
-### 1. Clone & configure
 ```bash
-git clone https://github.com/konaaravind4/WhatsApp-Appointment-Booking-Bot.git
+git clone https://github.com/konaaravind4/WhatsApp-Appointment-Booking-Bot
 cd WhatsApp-Appointment-Booking-Bot
 cp .env.example .env
-# Edit .env with your credentials
-```
-
-### 2. Run with Docker Compose
-```bash
-docker-compose up --build
-```
-The bot will be running at `http://localhost:5000`.
-
-### 3. Run locally
-```bash
 pip install -r requirements.txt
-# Start Redis: docker run -d -p 6379:6379 redis:7-alpine
-python app/main.py
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 4. Run tests
-```bash
-python -m pytest tests/ -v
-```
+### Configuration
 
----
-
-## 📡 API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/webhook` | WhatsApp webhook verification |
-| POST | `/webhook` | Inbound WhatsApp Cloud API message |
-| POST | `/twilio/reply` | Twilio TwiML fallback endpoint |
-
----
-
-## 💬 Conversation Flow
-
-```
-User:  "Book a haircut for tomorrow at 2pm, my name is Alice"
-Bot:   ✅ Booking Confirmed!
-       📋 Booking ID: #A1B2C3
-       👤 Name: Alice
-       💇 Service: Haircut
-       📅 Date: 2025-12-26
-       🕐 Time: 14:00
-       To cancel: CANCEL #A1B2C3
-
-User:  "CANCEL #A1B2C3"
-Bot:   ✅ Booking #A1B2C3 has been cancelled.
+```env
+WHATSAPP_TOKEN=your_whatsapp_business_api_token
+WHATSAPP_PHONE_ID=your_phone_number_id
+VERIFY_TOKEN=your_webhook_verify_token
+GEMINI_API_KEY=your_gemini_key        # for NLU
+KONA_DB_PATH=appointments.kona        # appointment storage
 ```
 
 ---
 
-## 🔧 Environment Variables
+## 💬 Sample Conversation
 
-| Variable | Description |
-|----------|-------------|
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `REDIS_URL` | Redis connection URL |
-| `TWILIO_AUTH_TOKEN` | Twilio auth token |
-| `WHATSAPP_VERIFY_TOKEN` | Webhook verification token |
-| `PORT` | Server port (default: 5000) |
+```
+User:  Hi, I'd like to book an appointment for a haircut tomorrow
+
+Bot:   Sure! I have these slots available tomorrow (Tuesday, June 2):
+       1️⃣  10:00 AM - 10:30 AM
+       2️⃣  2:00 PM  - 2:30 PM
+       3️⃣  4:30 PM  - 5:00 PM
+       
+       Which time works for you?
+
+User:  The 2pm slot please
+
+Bot:   ✅ Booked! Appointment confirmed:
+       📅 Tuesday, June 2 at 2:00 PM
+       ✂️  Service: Haircut (30 min)
+       📍 Location: Main Street Salon
+       
+       You'll receive a reminder 1 hour before. 
+       Reply CANCEL to cancel.
+
+User:  Actually can we reschedule to 4:30?
+
+Bot:   ✅ Rescheduled! New time: Tuesday, June 2 at 4:30 PM
+```
 
 ---
 
-## 📁 Project Structure
+## 💾 KonaDB Storage (New!)
+
+All appointments are stored in [KonaDB](https://github.com/konaaravind4/kona-db) for persistence and analytics:
+
+```python
+import kona
+
+conn = kona.connect("appointments.kona")
+
+# Query appointments
+upcoming = conn.execute("""
+    SELECT * FROM appointments 
+    WHERE scheduled_at > ? AND status = 'confirmed'
+    ORDER BY scheduled_at ASC
+""", (time.time(),))
+
+# Analytics
+conn.execute("""
+    SELECT service, COUNT(*) as bookings, 
+           AVG(duration_minutes) as avg_duration
+    FROM appointments
+    WHERE created_at > ?
+    GROUP BY service
+    ORDER BY bookings DESC
+""", (week_ago,))
+```
+
+---
+
+## 🌍 Ecosystem Integration
 
 ```
-WhatsApp-Appointment-Booking-Bot/
-├── agents/
-│   ├── intent_agent.py        # Gemini-powered intent extraction
-│   ├── availability_agent.py  # Redis slot management
-│   └── confirmation_agent.py  # Booking storage & reminders
-├── app/
-│   └── main.py               # Flask webhook gateway
-├── stream/
-│   └── flink_processor.py    # Redis Streams event processor
-├── tests/
-│   └── test_agents.py        # Unit tests
-├── Dockerfile
-├── docker-compose.yml
-└── requirements.txt
+WhatsApp-Appointment-Booking-Bot
+     │
+     ├── KonaDB ──────────────────────────────────► Appointment persistence
+     │                                               (shared with other projects)
+     │
+     └── AI SQL Analyst ──────────────────────────► Query appointments in plain English
+         "How many haircut appointments were booked this week?"
 ```
+
+---
+
+## 📄 License
+
+MIT © [konaaravind4](https://github.com/konaaravind4)
